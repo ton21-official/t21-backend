@@ -3,5 +3,5 @@ main = "index.js"
 compatibility_date = "2023-10-01"
 
 kv_namespaces = [
-  { binding = "T21_USERS", id = "", preview_id = "" }
+  { binding = "T21_KV", id = "YOUR_KV_ID_HERE" }
 ]
