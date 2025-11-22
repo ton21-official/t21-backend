@@ -1,104 +1,118 @@
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     const url = new URL(request.url);
-    const path = url.pathname;
+    const pathname = url.pathname;
 
-    // ------------------------------
-    // Helpers
-    // ------------------------------
+    // Allow CORS
+    const headers = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    };
 
-    // simple json response
-    function json(data, status = 200) {
-      return new Response(JSON.stringify(data), {
-        status,
-        headers: { "Content-Type": "application/json" }
-      });
+    if (request.method === "OPTIONS") {
+      return new Response("OK", { headers });
     }
 
-    // fetch or create user
-    async function getUser(tg_id) {
-      let data = await env.T21_KV.get(tg_id);
-      if (!data) {
-        const user = {
-          balance: 0,
-          lastMining: 0,
-          lastAd: 0,
-          adsToday: 0,
-          created: Date.now()
-        };
-        await env.T21_KV.put(tg_id, JSON.stringify(user));
-        return user;
+    // Helper — read JSON
+    async function readJSON(req) {
+      try {
+        return await req.json();
+      } catch {
+        return null;
       }
-      return JSON.parse(data);
     }
 
-    async function saveUser(tg_id, data) {
-      await env.T21_KV.put(tg_id, JSON.stringify(data));
+    // ---------------------------
+    // 1️⃣ GET USER DATA
+    // /user?id=12345
+    // ---------------------------
+    if (pathname === "/user" && request.method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return new Response("Missing id", { status: 400 });
+
+      const data = await env.T21_KV.get(id);
+      return new Response(data || "{}", { headers });
     }
 
-    // ------------------------------
-    // Routes
-    // ------------------------------
+    // ---------------------------
+    // 2️⃣ SAVE TON ADDRESS
+    // POST /save_address
+    // { id: "...", address: "UQ..." }
+    // ---------------------------
+    if (pathname === "/save_address" && request.method === "POST") {
+      const body = await readJSON(request);
+      if (!body?.id || !body?.address)
+        return new Response("Invalid body", { status: 400 });
 
-    // GET /get-user?tg_id=12345
-    if (path === "/get-user") {
-      const tg_id = url.searchParams.get("tg_id");
-      if (!tg_id) return json({ error: "missing tg_id" }, 400);
+      // Load existing user or create new record
+      let user = await env.T21_KV.get(body.id, "json");
+      if (!user) user = {};
 
-      const user = await getUser(tg_id);
-      return json({ ok: true, user });
+      user.address = body.address;
+
+      await env.T21_KV.put(body.id, JSON.stringify(user));
+
+      return new Response(JSON.stringify({ ok: true }), { headers });
     }
 
-    // POST /daily
-    if (path === "/daily") {
-      const body = await request.json();
-      const { tg_id } = body;
-      if (!tg_id) return json({ error: "missing tg_id" }, 400);
+    // ---------------------------
+    // 3️⃣ ADD MINING REWARD
+    // POST /add_mining
+    // { id: "...", amount: 20 }
+    // ---------------------------
+    if (pathname === "/add_mining" && request.method === "POST") {
+      const body = await readJSON(request);
+      if (!body?.id || !body?.amount)
+        return new Response("Invalid body", { status: 400 });
 
-      const user = await getUser(tg_id);
-      const now = Date.now();
+      let user = await env.T21_KV.get(body.id, "json");
+      if (!user) user = { balance: 0 };
 
-      // 24 hours = 86400000ms
-      if (now - user.lastMining < 86400000) {
-        return json({ ok: false, msg: "try later", next: user.lastMining + 86400000 });
-      }
+      user.balance = (user.balance || 0) + body.amount;
+      user.lastMining = Date.now();
 
-      user.balance += 20;     // +20 T21
-      user.lastMining = now;
+      await env.T21_KV.put(body.id, JSON.stringify(user));
 
-      await saveUser(tg_id, user);
-      return json({ ok: true, balance: user.balance });
+      return new Response(JSON.stringify({ ok: true, balance: user.balance }), { headers });
     }
 
-    // POST /ad-reward
-    if (path === "/ad-reward") {
-      const body = await request.json();
-      const { tg_id } = body;
-      if (!tg_id) return json({ error: "missing tg_id" }, 400);
+    // ---------------------------
+    // 4️⃣ ADD AD REWARD
+    // POST /add_ad_reward
+    // { id: "...", amount: 5 }
+    // ---------------------------
+    if (pathname === "/add_ad_reward" && request.method === "POST") {
+      const body = await readJSON(request);
+      if (!body?.id || !body?.amount)
+        return new Response("Invalid body", { status: 400 });
 
-      const user = await getUser(tg_id);
-      const now = Date.now();
+      let user = await env.T21_KV.get(body.id, "json");
+      if (!user) user = { balance: 0, adsToday: 0 };
 
-      // max 10 ads per day
-      const dayStart = Math.floor(now / 86400000);
-
-      if (!user.adDay || user.adDay !== dayStart) {
-        user.adDay = dayStart;
+      // Limit: 10 ads per day
+      const day = new Date().toDateString();
+      if (user.lastAdDay !== day) {
+        user.lastAdDay = day;
         user.adsToday = 0;
       }
 
-      if (user.adsToday >= 10) {
-        return json({ ok: false, msg: "limit reached" });
-      }
+      if (user.adsToday >= 10)
+        return new Response(JSON.stringify({ error: "LIMIT" }), { headers });
 
-      user.adsToday += 1;
-      user.balance += 5;  // +5 T21 reward
+      user.adsToday++;
+      user.balance = (user.balance || 0) + body.amount;
 
-      await saveUser(tg_id, user);
-      return json({ ok: true, balance: user.balance, adsToday: user.adsToday });
+      await env.T21_KV.put(body.id, JSON.stringify(user));
+
+      return new Response(JSON.stringify({ ok: true, balance: user.balance, adsToday: user.adsToday }), {
+        headers,
+      });
     }
 
-    // default
-    return json({ ok: false, error: "unknown endpoint" }, 404);
-  }
+    // ---------------------------
+    // Default
+    // ---------------------------
+    return new Response("T21 backend is running", { headers });
+  },
 };
