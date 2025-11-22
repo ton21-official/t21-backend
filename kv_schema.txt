@@ -1,0 +1,4 @@
+T21_USERS — stores all miners balances
+
+key = IP address  
+value = { balance, lastMine, lastAd }
